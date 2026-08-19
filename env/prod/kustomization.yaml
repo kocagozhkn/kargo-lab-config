@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: nginx-prod
+
+resources:
+  - ../../base
+
+# Kargo'nun kustomize-set-image adımı BU bloğu günceller
+# (kustomize edit set image ile newTag değişir).
+images:
+  - name: public.ecr.aws/nginx/nginx
+    newTag: 1.27.0
