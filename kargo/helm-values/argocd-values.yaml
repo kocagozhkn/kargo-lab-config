@@ -1,0 +1,27 @@
+# LAB AMAÇLI — admin/admin. Prod'da ASLA kullanma.
+global:
+  domain: argocd.localhost
+
+configs:
+  secret:
+    # bcrypt("admin")
+    argocdServerAdminPassword: "<BURAYA bcrypt-hash — asagidaki komutla uret>"
+    argocdServerAdminPasswordMtime: "2026-08-19T00:00:00Z"
+  params:
+    # TLS terminasyonu olmadan port-forward ile HTTP erişimi için
+    server.insecure: true
+
+server:
+  service:
+    type: ClusterIP
+
+# Lab'de kaynak tasarrufu
+dex:
+  enabled: false
+notifications:
+  enabled: false
+# NOT: chart 10.4.0'da bu anahtar etkili olmadı — applicationset-controller
+# yine de kuruldu. Zararsız (bu lab ApplicationSet kullanmıyor); gerçekten
+# devre dışı bırakmak istersen chart'ın güncel values şemasını kontrol et.
+applicationSet:
+  enabled: false

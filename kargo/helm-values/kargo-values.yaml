@@ -1,0 +1,39 @@
+# ============================================================
+#  LAB AMAÇLI DEĞERLER — PRODUCTION'DA ASLA KULLANMA
+#
+#  İki alan placeholder olarak bırakıldı; doldurman gerekiyor:
+#
+#  passwordHash — UI/CLI şifresi. bcrypt("admin") üretmek için:
+#    docker run --rm --entrypoint htpasswd \
+#      public.ecr.aws/docker/library/httpd:2.4-alpine -nbBC 10 "" admin \
+#      | tr -d ':\n' | sed 's/^\$2y/\$2a/'
+#
+#  tokenSigningKey — admin JWT'lerini imzalar. Üretmek için:
+#    openssl rand -base64 29 | tr -d "=+/" | cut -c1-32
+#
+#  ⚠️ Kargo quickstart'ında yayımlanmış sabit bir örnek değer dolaşıyor.
+#     Onu KULLANMA: herkese açık bir string ile imzalanan JWT'ler üçüncü
+#     kişiler tarafından taklit edilebilir, yani sahte admin token'ı
+#     üretilebilir. Üretimde bu değeri Secret'tan besle (api.secret.name),
+#     values dosyasına hiç yazma.
+# ============================================================
+api:
+  adminAccount:
+    enabled: true
+    passwordHash: "<BURAYA bcrypt-hash — asagidaki komutla uret>"
+    tokenSigningKey: "<BURAYA imzalama anahtari — asagidaki komutla uret>"
+    tokenTTL: 24h
+  service:
+    type: ClusterIP
+  # port-forward 8082 ile eşleşsin diye (token issuer / callback URL üretimi)
+  host: localhost:8082
+  # Kargo UI'dan Argo CD'ye deep-link. Sharding yok -> boş string key.
+  argocd:
+    urls:
+      "": http://localhost:8081
+
+controller:
+  argocd:
+    integrationEnabled: true
+    namespace: argocd
+    watchArgocdNamespaceOnly: false

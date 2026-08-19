@@ -1,0 +1,220 @@
+# ==========================================================================
+#  Kargo lab kaynakları — proje: kargo-lab
+#  Kargo 1.11.2 şemasına göre üretildi.
+#
+#  ⚠️ 1.11 SÜRÜM NOTU: ImageSubscription'da `semverConstraint` alanı
+#     KALDIRILDI; yerine `constraint` geldi. Ayrıca `allowTags` (tekil)
+#     v1.11.0'dan itibaren artifact discovery'yi HATA ile düşürüyor
+#     (yerine `allowTagsRegexes` listesi kullanılır).
+# ==========================================================================
+---
+# --------------------------------------------------------------------------
+# ProjectConfig: hangi Stage'in otomatik promote edileceğini belirler.
+# dev -> autoPromotionEnabled: true
+# prod BİLİNÇLİ OLARAK listelenmedi => manuel promotion (varsayılan kapalı).
+# --------------------------------------------------------------------------
+apiVersion: kargo.akuity.io/v1alpha1
+kind: ProjectConfig
+metadata:
+  name: kargo-lab
+  namespace: kargo-lab
+spec:
+  promotionPolicies:
+    - stageSelector:
+        name: dev
+      autoPromotionEnabled: true
+---
+# --------------------------------------------------------------------------
+# Warehouse: nginx imajını izler, yeni sürüm bulunca Freight üretir.
+# interval: 1m -> lab'de Warehouse polling gecikmesini kısaltmak için.
+#   (Üretimde 5m+ tercih edilir; registry rate limit'lerine dikkat.)
+# --------------------------------------------------------------------------
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: nginx
+  namespace: kargo-lab
+spec:
+  interval: 1m
+  freightCreationPolicy: Automatic
+  subscriptions:
+    - image:
+        repoURL: public.ecr.aws/nginx/nginx
+        imageSelectionStrategy: SemVer
+        # 1.11'de bu alanın adı `constraint` (eski adı semverConstraint)
+        constraint: ">=1.27.0 <1.29.0"
+        strictSemvers: true
+        discoveryLimit: 20
+---
+# --------------------------------------------------------------------------
+# Stage: dev
+#   Freight kaynağı: doğrudan Warehouse'tan (sources.direct: true)
+#   Akış: git-clone -> kustomize-set-image -> git-commit -> git-push
+#         -> argocd-update
+#   Doğrudan main branch'ine push eder, PR yok.
+# --------------------------------------------------------------------------
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: dev
+  namespace: kargo-lab
+spec:
+  vars:
+    - name: gitRepo
+      value: https://github.com/kocagozhkn/kargo-lab-config.git
+    - name: imageRepo
+      value: public.ecr.aws/nginx/nginx
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: nginx
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      steps:
+        - uses: git-clone
+          config:
+            repoURL: ${{ vars.gitRepo }}
+            checkout:
+              - branch: main
+                path: ./src
+
+        - uses: kustomize-set-image
+          as: update-image
+          config:
+            path: ./src/env/dev
+            images:
+              # Kargo 1.11: images[] açıkça verildiğinde `tag` VEYA `digest`
+              # zorunlu (şemadaki oneOf). Tag'i Freight'ten imageFrom() ile
+              # okuyoruz.
+              - image: ${{ vars.imageRepo }}
+                tag: ${{ imageFrom(vars.imageRepo).Tag }}
+
+        - uses: git-commit
+          as: commit
+          config:
+            path: ./src
+            # kustomize-set-image'in ürettiği hazır commit mesajı
+            message: ${{ outputs['update-image'].commitMessage }}
+
+        - uses: git-push
+          as: push
+          config:
+            path: ./src
+            provider: github
+            targetBranch: main
+
+        - uses: argocd-update
+          config:
+            apps:
+              - name: kargo-lab-dev
+                namespace: argocd
+                sources:
+                  # repoURL, Argo CD Application'ın source.repoURL'i ile
+                  # BİREBİR aynı olmalı; yoksa adım eşleşme bulamaz.
+                  - repoURL: ${{ vars.gitRepo }}
+                    # desiredRevision BİLİNÇLİ OLARAK YOK.
+                    # dev ve prod aynı branch'i (main) paylaşıyor. Commit'e
+                    # sabitlenmiş bir desiredRevision yazarsak, prod'un PR'ı
+                    # main'e merge edildiği anda main ilerler, Argo CD dev
+                    # app'ini yeni commit'e senkronlar ve Kargo'nun sürekli
+                    # çalışan health check'i eski commit'i bekleyip Stage'i
+                    # kalıcı Unhealthy'ye düşürür.
+                    # Boş bırakınca revizyon Freight'ten çıkarılır; imaj-only
+                    # Freight'te git commit'i olmadığı için health check
+                    # yalnızca Application'ın Sync + Health durumuna bakar.
+---
+# --------------------------------------------------------------------------
+# Stage: prod
+#   Freight kaynağı: upstream dev (sources.stages: [dev])
+#   ProjectConfig'te listelenmediği için promotion MANUEL tetiklenir.
+#   Akış: git-clone -> kustomize-set-image -> git-commit
+#         -> git-push (generateTargetBranch: true, ayrı branch)
+#         -> git-open-pr -> git-wait-for-pr -> argocd-update
+#
+#   ⚠️ provider: github  (repo GitHub'da barındığı için. Repo GitLab'a
+#      taşınırsa bu 3 yerdeki değeri `gitlab` yapmak gerekir:
+#      git-push, git-open-pr, git-wait-for-pr)
+# --------------------------------------------------------------------------
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: prod
+  namespace: kargo-lab
+spec:
+  vars:
+    - name: gitRepo
+      value: https://github.com/kocagozhkn/kargo-lab-config.git
+    - name: imageRepo
+      value: public.ecr.aws/nginx/nginx
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: nginx
+      sources:
+        direct: false
+        stages:
+          - dev
+  promotionTemplate:
+    spec:
+      steps:
+        - uses: git-clone
+          config:
+            repoURL: ${{ vars.gitRepo }}
+            checkout:
+              - branch: main
+                path: ./src
+
+        - uses: kustomize-set-image
+          as: update-image
+          config:
+            path: ./src/env/prod
+            images:
+              - image: ${{ vars.imageRepo }}
+                tag: ${{ imageFrom(vars.imageRepo).Tag }}
+
+        - uses: git-commit
+          as: commit
+          config:
+            path: ./src
+            message: ${{ outputs['update-image'].commitMessage }}
+
+        - uses: git-push
+          as: push
+          config:
+            path: ./src
+            provider: github
+            # main'e değil, Kargo'nun ürettiği kargo/prod-... branch'ine push
+            generateTargetBranch: true
+
+        - uses: git-open-pr
+          as: open-pr
+          config:
+            repoURL: ${{ vars.gitRepo }}
+            provider: github
+            sourceBranch: ${{ outputs.push.branch }}
+            targetBranch: main
+            description: |
+              Kargo prod promotion — Freight: ${{ ctx.targetFreight.name }}
+              Promotion: ${{ ctx.promotion }}
+
+        - uses: git-wait-for-pr
+          as: wait-for-pr
+          config:
+            repoURL: ${{ vars.gitRepo }}
+            provider: github
+            # git-open-pr çıktısı iç içe: { pr: { id, url } }
+            prNumber: ${{ outputs['open-pr'].pr.id }}
+            pollInterval: 20s
+
+        - uses: argocd-update
+          config:
+            apps:
+              - name: kargo-lab-prod
+                namespace: argocd
+                sources:
+                  - repoURL: ${{ vars.gitRepo }}
+                    # desiredRevision yok — dev ile aynı gerekçe (yukarıya bak).
+                    # Bir sonraki dev promotion'ı main'i ilerlettiğinde prod
+                    # Stage'i Unhealthy'ye düşmesin diye.

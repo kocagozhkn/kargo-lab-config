@@ -1,0 +1,55 @@
+# ==========================================================================
+#  Argo CD Applications — Kargo tarafından yönetilir
+#
+#  ⚠️ EN SIK YAPILAN HATA: kargo.akuity.io/authorized-stage annotation'ı.
+#     Bu annotation olmadan Kargo'nun argocd-update adımı şu hatayla düşer:
+#       "Argo CD Application ... does not permit mutation by Kargo Stage ..."
+#     Format: <project>:<stage>
+# ==========================================================================
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kargo-lab-dev
+  namespace: argocd
+  annotations:
+    kargo.akuity.io/authorized-stage: kargo-lab:dev
+spec:
+  project: default
+  source:
+    # Kargo'nun argocd-update adımındaki repoURL ile BİREBİR aynı olmalı
+    repoURL: https://github.com/kocagozhkn/kargo-lab-config.git
+    targetRevision: main
+    path: env/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nginx-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kargo-lab-prod
+  namespace: argocd
+  annotations:
+    kargo.akuity.io/authorized-stage: kargo-lab:prod
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kocagozhkn/kargo-lab-config.git
+    targetRevision: main
+    path: env/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nginx-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
