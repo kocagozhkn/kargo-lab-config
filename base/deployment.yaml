@@ -13,6 +13,12 @@ spec:
     metadata:
       labels:
         app: nginx
+      annotations:
+        # Prometheus chart'ının varsayılan `kubernetes-pods` job'ı bu üç
+        # annotation'a bakarak pod'u keşfeder. Ayrı scrape_config gerekmez.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9113"
+        prometheus.io/path: /metrics
     spec:
       containers:
         - name: nginx
@@ -22,6 +28,14 @@ spec:
           ports:
             - name: http
               containerPort: 80
+            - name: stub
+              containerPort: 8080
+          volumeMounts:
+            # subPath: conf.d dizinini komple ezmemek için tek dosya mount'u
+            # (imajdaki default.conf yerinde kalmalı).
+            - name: nginx-status-conf
+              mountPath: /etc/nginx/conf.d/stub_status.conf
+              subPath: stub_status.conf
           readinessProbe:
             httpGet:
               path: /
@@ -35,4 +49,39 @@ spec:
             limits:
               cpu: 200m
               memory: 128Mi
+
+        # ------------------------------------------------------------------
+        # Sade nginx imajı Prometheus formatında metrik yayınlamaz. Bu sidecar
+        # stub_status çıktısını okuyup :9113/metrics üzerinde Prometheus
+        # formatına çevirir.
+        # Verdiği metrikler: nginx_up, nginx_connections_{active,reading,
+        # writing,waiting}, nginx_http_requests_total, nginx_connections_
+        # {accepted,handled}_total. Per-path latency / status kodu YOK.
+        # ------------------------------------------------------------------
+        - name: nginx-exporter
+          image: nginx/nginx-prometheus-exporter:1.5.3
+          args:
+            - --nginx.scrape-uri=http://127.0.0.1:8080/stub_status
+          ports:
+            - name: metrics
+              containerPort: 9113
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+
+      volumes:
+        - name: nginx-status-conf
+          configMap:
+            name: nginx-status-conf
+
 #hello

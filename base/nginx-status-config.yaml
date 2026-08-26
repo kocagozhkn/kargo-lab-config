@@ -1,0 +1,26 @@
+# --------------------------------------------------------------------------
+# stub_status: sade nginx imajının sunabildiği tek metrik kaynağı.
+# 80 portundaki asıl trafiği etkilememek için ayrı bir server bloğu (8080).
+# Sadece pod içinden (127.0.0.1) okunur; Service'e açılmaz.
+#
+# NOT: düz `resources:` girdisi olduğu için ConfigMap adı sabit — içerik
+# değişirse pod'lar kendiliğinden yeniden başlamaz, elle restart gerekir.
+# --------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-status-conf
+data:
+  stub_status.conf: |
+    server {
+        listen 8080;
+        access_log off;
+
+        location /stub_status {
+            stub_status;
+        }
+
+        location / {
+            return 404;
+        }
+    }

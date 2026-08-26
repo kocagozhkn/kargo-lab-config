@@ -1,0 +1,33 @@
+# ==========================================================================
+#  Minimal Prometheus — sadece server.
+#  Alertmanager / pushgateway / node-exporter / kube-state-metrics kapalı;
+#  amaç yalnızca nginx sidecar exporter'ını scrape etmek.
+#
+#  Keşif yöntemi: chart'ın varsayılan `kubernetes-pods` scrape job'ı,
+#  pod'daki prometheus.io/scrape annotation'ına bakar. Bu yüzden ayrıca
+#  scrape_config yazmaya gerek yok — base/deployment.yaml'daki annotation
+#  yeterli.
+# ==========================================================================
+alertmanager:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  # kind lab: PV uğraşmamak için emptyDir. Pod yeniden doğarsa metrik geçmişi gider.
+  persistentVolume:
+    enabled: false
+  retention: 6h
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP

@@ -12,3 +12,8 @@ spec:
     - name: http
       port: 80
       targetPort: http
+    # Keşif pod annotation'ı üzerinden yürüyor; bu port elle kontrol
+    # (curl nginx:9113/metrics) ve ileride ServiceMonitor'a geçiş için.
+    - name: metrics
+      port: 9113
+      targetPort: metrics
