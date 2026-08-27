@@ -1,0 +1,19 @@
+# ==========================================================================
+#  kind cluster tanımı — kargo-lab
+#
+#  Tek control-plane node yeterli: bu lab'de node affinity / topology
+#  senaryosu yok. Kargo, Argo CD, cert-manager, Argo Rollouts ve Prometheus
+#  hepsi aynı node'a sığıyor (ölçülen: ~1 CPU request, ~350Mi bellek).
+#
+#  Kullanım:
+#    kind create cluster --config kind/kargo-lab.yaml
+#    kubectl config use-context kind-kargo-lab
+#
+#  NOT: extraPortMappings YOK. Argo CD ve Kargo arayüzlerine
+#  kubectl port-forward ile erişiliyor (bkz. SETUP.md 3.7).
+# ==========================================================================
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kargo-lab
+nodes:
+  - role: control-plane

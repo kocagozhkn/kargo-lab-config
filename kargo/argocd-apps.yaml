@@ -1,6 +1,16 @@
 # ==========================================================================
 #  Argo CD Applications — Kargo tarafından yönetilir
 #
+#  ⚠️ BU DOSYAYI APPLY ETMEK targetRevision'I SIFIRLAR.
+#     Stage'lerin argocd-update adımı `updateTargetRevision: true` ile
+#     Application'ın targetRevision'ını promote edilen commit'e sabitliyor.
+#     Bu dosyada ise `main` yazıyor. Dolayısıyla cluster ile git arasındaki
+#     targetRevision farkı DRIFT DEĞİL, normal çalışma durumudur.
+#     Dosyayı yeniden apply ederseniz sabitleme bozulur ve Application
+#     tekrar main HEAD'ini takip etmeye başlar.
+#     Kontrol: kubectl -n argocd get app -o custom-columns=\
+#       'NAME:.metadata.name,REV:.spec.source.targetRevision'
+#
 #  ⚠️ EN SIK YAPILAN HATA: kargo.akuity.io/authorized-stage annotation'ı.
 #     Bu annotation olmadan Kargo'nun argocd-update adımı şu hatayla düşer:
 #       "Argo CD Application ... does not permit mutation by Kargo Stage ..."

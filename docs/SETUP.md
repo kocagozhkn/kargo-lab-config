@@ -39,8 +39,10 @@ teşhisi** [Bölüm 9](#9-tuzaklar-hatalar-ve-teşhisleri)'da.
 | cert-manager | v1.21.1 | `cert-manager` | Kargo ön koşulu (webhook sertifikaları) |
 | Argo CD | chart 10.4.0 / app v3.5.1 | `argocd` | ClusterIP + port-forward, `admin/admin` |
 | Kargo | chart & app 1.11.2 | `kargo` | ClusterIP + port-forward, `admin/admin` |
-| Kargo Project | — | `kargo-lab` | Warehouse + 2 Stage |
-| İş yükü | nginx | `nginx-dev`, `nginx-prod` | `public.ecr.aws/nginx/nginx` |
+| Argo Rollouts | chart 2.41.1 / app v1.9.1 | `argo-rollouts` | verification'ın `AnalysisTemplate` CRD'lerini sağlar |
+| Prometheus | chart 29.27.0 / app v3.14.0 | `monitoring` | minimal (yalnız server), verification'ın ölçüm kaynağı |
+| Kargo Project | — | `kargo-lab` | Warehouse + 2 Stage + PromotionTask |
+| İş yükü | nginx + exporter sidecar | `nginx-dev`, `nginx-prod` | `public.ecr.aws/nginx/nginx` + `nginx/nginx-prometheus-exporter:1.5.3` |
 
 ### Akış diyagramı
 
@@ -165,16 +167,12 @@ done
 
 ### 3.1 kind cluster
 
-```bash
-cat > /tmp/kind-kargo-lab.yaml <<'EOF'
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-name: kargo-lab
-nodes:
-  - role: control-plane
-EOF
+Cluster tanımı repoda: [`kind/kargo-lab.yaml`](../kind/kargo-lab.yaml).
+Tek control-plane node; `extraPortMappings` yok, arayüzlere port-forward ile
+erişiliyor (bkz. 3.7).
 
-kind create cluster --config /tmp/kind-kargo-lab.yaml
+```bash
+kind create cluster --config kind/kargo-lab.yaml
 kubectl config use-context kind-kargo-lab
 ```
 
@@ -289,7 +287,80 @@ kubectl get pods -n kargo
 kubectl get crd | grep kargo     # 9 CRD — projectconfigs dahil olmalı
 ```
 
-### 3.5 Port-forward ve login
+### 3.5 Argo Rollouts
+
+Kargo'nun **verification** özelliği kendi CRD'lerini getirmez; Argo
+Rollouts'un `AnalysisTemplate` ve `AnalysisRun` kaynaklarını kullanır. Bu
+chart kurulmazsa Stage'lere `verification` bloğu yazılamaz.
+
+`kargo-values.yaml` içinde `controller.argoRollouts.integrationEnabled: true`
+olduğu için Kargo bu CRD'leri arar.
+
+```bash
+# argo repo'su 3.3'te eklendi
+helm install argo-rollouts argo/argo-rollouts \
+  --namespace argo-rollouts --create-namespace \
+  --version 2.41.1 \
+  --wait --timeout 5m
+```
+
+Özel values gerekmiyor (chart varsayılanları yeterli).
+
+> **Sıra önemli:** Rollouts'u **Kargo'dan önce** kurmak tercih edilir. Sonradan
+> kurduysan Kargo controller'ının CRD'leri görmesi için yeniden başlatman
+> gerekebilir:
+> ```bash
+> kubectl -n kargo rollout restart deploy/kargo-controller
+> ```
+
+**Doğrula** (iki CRD şart):
+
+```bash
+kubectl get crd | grep -E 'analysistemplates|analysisruns'
+kubectl wait --for=condition=Ready pod --all -n argo-rollouts --timeout=180s
+```
+
+### 3.6 Prometheus
+
+Verification'ın ölçüm kaynağı. **Minimal kurulum**: Alertmanager, Grafana,
+pushgateway, node-exporter ve kube-state-metrics kapalı — yalnızca server.
+Values dosyası repoda:
+[`monitoring/helm-values/prometheus-values.yaml`](../monitoring/helm-values/prometheus-values.yaml).
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update prometheus-community
+
+helm upgrade --install prometheus prometheus-community/prometheus \
+  --namespace monitoring --create-namespace \
+  --version 29.27.0 \
+  -f monitoring/helm-values/prometheus-values.yaml \
+  --wait --timeout 5m
+```
+
+Values dosyasındaki iki bilinçli seçim:
+
+- `persistentVolume.enabled: false` — kind'de PV uğraşmamak için emptyDir.
+  **Pod yeniden doğarsa metrik geçmişi gider.**
+- `scrape_interval: 15s` — varsayılan `1m` ile bir kırılmanın metriğe
+  yansıması AnalysisRun'ın bitiş süresinden (~45s) uzun sürüyor ve
+  verification sorunu göremeden geçiyor.
+
+Hedef keşfi için ayrı `scrape_config` **yazılmıyor**: chart'ın varsayılan
+`kubernetes-pods` job'ı pod annotation'larına bakıyor, nginx pod'ları da bu
+annotation'ları taşıyor (bkz. Bölüm 4).
+
+**Doğrula:**
+
+```bash
+kubectl -n monitoring get pods            # prometheus-server  2/2 Running
+
+# nginx hedefleri toplanıyor mu (nginx-dev + nginx-prod bekleniyor)
+kubectl -n monitoring exec deploy/prometheus-server -c prometheus-server -- \
+  sh -c 'wget -qO- "http://127.0.0.1:9090/api/v1/query?query=nginx_up"'
+```
+
+### 3.7 Port-forward ve login
 
 Kargo API **443/HTTPS** üzerinde self-signed sertifika ile dinler.
 
@@ -316,19 +387,62 @@ kargo version          # Client ve Server aynı olmalı: v1.11.2
 
 ```
 kargo-lab-config/
+├── kind/
+│   └── kargo-lab.yaml          # cluster tanımı
 ├── base/                       # ortamdan bağımsız nginx tanımı
-│   ├── deployment.yaml         # image: public.ecr.aws/nginx/nginx:1.27.0
-│   ├── service.yaml
+│   ├── deployment.yaml         # nginx + nginx-prometheus-exporter sidecar
+│   ├── service.yaml            # http:80 + metrics:9113
+│   ├── nginx-status-config.yaml# stub_status ConfigMap (8080)
 │   └── kustomization.yaml
 ├── env/
 │   ├── dev/kustomization.yaml  # namespace: nginx-dev  + images[] tag override
 │   └── prod/kustomization.yaml # namespace: nginx-prod + images[] tag override
 ├── kargo/                      # cluster kaynakları (Argo CD tarafından izlenmez)
-│   ├── kargo-resources.yaml
+│   ├── kargo-resources.yaml    # ProjectConfig + Warehouse + Stage'ler
+│   ├── promotion-tasks.yaml    # PromotionTask (bkz. 5.8)
+│   ├── analysis-templates.yaml # AnalysisTemplate (bkz. 5.7)
 │   ├── argocd-apps.yaml
 │   └── helm-values/
-└── docs/SETUP.md
+├── monitoring/
+│   └── helm-values/prometheus-values.yaml
+└── docs/
+    ├── SETUP.md
+    └── DEMO.md                 # prova edilmiş verification demo akışı
 ```
+
+### Metrik toplama zinciri
+
+Sade `nginx` imajı **Prometheus formatında metrik yayınlamıyor** — sadece
+`stub_status` modülünü sunabiliyor. Zincir üç parçadan oluşuyor:
+
+1. **`base/nginx-status-config.yaml`** — 8080'de `stub_status` sunan ayrı bir
+   `server` bloğu. 80'deki asıl trafiğe dokunmuyor, Service'e açılmıyor,
+   yalnızca pod içinden (`127.0.0.1`) okunuyor.
+   Deployment'a `subPath` ile tek dosya olarak mount ediliyor; imajdaki
+   `conf.d/default.conf` yerinde kalsın diye.
+2. **`nginx-prometheus-exporter` sidecar'ı** — `stub_status` çıktısını okuyup
+   `:9113/metrics` üzerinde Prometheus formatına çeviriyor.
+3. **Pod annotation'ları** — Prometheus'un varsayılan `kubernetes-pods` job'ı
+   bunlara bakarak pod'u keşfediyor, ayrı `scrape_config` gerekmiyor:
+   ```yaml
+   prometheus.io/scrape: "true"
+   prometheus.io/port: "9113"
+   prometheus.io/path: /metrics
+   ```
+
+Gelen metrikler: `nginx_up`, `nginx_connections_{active,reading,writing,waiting}`,
+`nginx_connections_{accepted,handled}_total`, `nginx_http_requests_total`.
+
+> **Kapsam sınırı:** `stub_status` bu kadarını veriyor. Per-path latency, HTTP
+> status kodu dağılımı ve upstream metrikleri **yok** — bunlar için VTS
+> modüllü bir nginx imajı gerekir, ki bu Kargo'nun izlediği image repo'sunu
+> değiştirmek demektir.
+
+> **ConfigMap adı sabit:** `nginx-status-config.yaml` düz bir `resources`
+> girdisi olduğu için ada hash eklenmiyor. İçeriği değişirse pod'lar
+> **kendiliğinden yeniden başlamaz**; `kubectl rollout restart` gerekir.
+> (`configMapGenerator` kullanılsaydı içerik hash'i ada girer ve rollout
+> otomatik tetiklenirdi.)
 
 `env/*/kustomization.yaml` içindeki `images` bloğu **Kargo'nun yazdığı yerdir**:
 
@@ -569,6 +683,130 @@ ctx
 > **`ctx.freight` YOKTUR** — doğrusu `ctx.targetFreight`.
 > `ctx.targetFreight.alias` **değiştirilebilir**; commit mesajı gibi kalıcı
 > kayıtlarda `ctx.targetFreight.name` kullan.
+
+---
+
+### 5.7 Verification — AnalysisTemplate
+
+Tam içerik → [`kargo/analysis-templates.yaml`](../kargo/analysis-templates.yaml)
+
+Verification, bir Freight'i downstream'e geçmeye **uygun** kılan adımdır.
+Stage'e bağlanır:
+
+```yaml
+# Stage/dev
+spec:
+  verification:
+    analysisTemplates:
+      - name: smoke-check
+```
+
+`AnalysisTemplate` (Argo Rollouts CRD'si, bkz. 3.5) Prometheus'a sorar:
+
+```yaml
+metrics:
+  - name: nginx-healthy
+    count: 3
+    interval: 15s
+    failureLimit: 1
+    provider:
+      prometheus:
+        address: http://prometheus-server.monitoring.svc.cluster.local:80
+        query: min(nginx_up{namespace="nginx-dev"}) or vector(0)
+    successCondition: result[0] == 1
+```
+
+Sorgudaki iki parça bilinçli:
+
+- **`min()`** — rolling update sırasında eski ve yeni pod bir süre birlikte
+  yaşıyor. Ham `nginx_up` iki seri döndürür ve `result[0]` rastgele birini
+  seçerdi; `min()` hepsinin sağlıklı olmasını şart koşar. Bozuk bir sürümü
+  yakalayan şey budur.
+- **`or vector(0)`** — hiç pod yoksa `min()` boş vektör döner, `result[0]`
+  patlar ve ölçüm temiz bir `Failed` yerine `Error` verir. Fallback bunu
+  net biçimde başarısızlığa çevirir.
+
+> ⚠️ **Doğrulama Freight başına yapışkan ve asimetrik.**
+> Zaten doğrulanmış bir Freight'te başarısız bir reverify **hiçbir şeyi geri
+> almaz** — Stage yeşil kalır. Başarısız bir Freight'te ise reverify çalışır
+> ve kurtarır. Yani kırmızı bir durum göstermek/incelemek için **yeni bir
+> Freight** gerekir; mevcut olanı reverify etmek yetmez.
+
+> ⚠️ **Pod'u çökerten bir arıza verification'a hiç ulaşmaz.** nginx crashloop'a
+> girerse `argocd-update` sağlık bekler ve promotion asılı kalır
+> (`progressDeadlineSeconds`, varsayılan 10 dk). Verification yalnızca
+> promotion **başarıyla bittikten sonra** koşar.
+
+Elle yeniden doğrulama:
+
+```bash
+VID=$(kubectl -n kargo-lab get stage dev \
+  -o jsonpath='{.status.freightHistory[0].verificationHistory[0].id}')
+kubectl -n kargo-lab annotate stage dev \
+  "kargo.akuity.io/reverify={\"id\":\"$VID\",\"actor\":\"admin\",\"controlPlane\":false}" \
+  --overwrite
+```
+
+`kargo verify stage --project=kargo-lab dev` de aynı işi yapar (CLI login
+gerektirir).
+
+### 5.8 PromotionTask — ortak şablon
+
+Tam içerik → [`kargo/promotion-tasks.yaml`](../kargo/promotion-tasks.yaml)
+
+`standard-gitops-update` task'ı tek şablonla iki akışı karşılar; Stage sadece
+`vars` geçer:
+
+```yaml
+# Stage/prod
+promotionTemplate:
+  spec:
+    steps:
+      - task:
+          name: standard-gitops-update
+        vars:
+          - name: gitRepo
+            value: https://github.com/kocagozhkn/kargo-lab-config.git
+          - name: imageRepo
+            value: public.ecr.aws/nginx/nginx
+          - name: envPath
+            value: ./src/env/prod
+          - name: argocdApp
+            value: kargo-lab-prod
+          - name: openPR
+            value: "true"        # false -> doğrudan main'e push
+```
+
+> ⚠️ **Task içinde adım çıktıları `task.outputs[...]` ile okunur.**
+> Düz `outputs[...]` **çalışmaz**. Task, Promotion oluşturulurken *inflate*
+> edilir ve alias'lar çakışmayı önlemek için `task-1::` gibi bir ön ekle
+> namespace'lenir; gerçek runtime alias'ı task tanımı bilemez. Düz referans
+> `nil` döner ve adım şöyle düşer:
+> ```
+> failed to build step context: failed to get step config:
+> cannot fetch commitMessage from <nil>
+> ```
+
+> ⚠️ **`git-open-pr` diff yoksa SKIP edilir.** env dosyası zaten hedef
+> tag'deyse `kustomize-set-image` no-op olur, `git-commit` skip edilir,
+> açılacak PR kalmaz. Bu durumda `outputs['open-pr']` hiç oluşmaz ve
+> `git-wait-for-pr` `.pr.id` üzerinde patlar. Guard şart:
+> ```yaml
+> if: ${{ vars.openPR == 'true' && task.outputs['open-pr']?.pr != nil }}
+> ```
+> (`?.` ve `??` operatörleri destekli — Kargo expr-lang v1.17 kullanıyor.)
+
+Task'ın `argocd-update` adımı iki akışı tek ifadeyle karşılar:
+
+```yaml
+desiredRevision: ${{ task.outputs['wait-for-pr']?.commit ?? task.outputs['commit'].commit }}
+updateTargetRevision: true
+```
+
+PR akışında merge commit'ine, doğrudan push akışında (`wait-for-pr` hiç
+oluşmaz) commit'e düşer. `task.outputs['commit'].commit`, `git-commit` skip
+edilse bile dolu gelir (clone anındaki HEAD), dolayısıyla ifade her durumda
+tanımlıdır.
 
 ---
 
@@ -1068,16 +1306,20 @@ token'ı platformdan **iptal et** — silmek yetmez, hâlâ geçerlidir.
 ```bash
 # Sadece Kargo lab kaynakları (cluster ayakta kalır)
 kubectl delete -f kargo/kargo-resources.yaml
+kubectl delete -f kargo/promotion-tasks.yaml
+kubectl delete -f kargo/analysis-templates.yaml
 kubectl delete -f kargo/argocd-apps.yaml
 kargo delete project kargo-lab
 
 # Helm release'leri
-helm uninstall kargo        -n kargo
-helm uninstall argocd       -n argocd
-helm uninstall cert-manager -n cert-manager
+helm uninstall prometheus    -n monitoring
+helm uninstall argo-rollouts -n argo-rollouts
+helm uninstall kargo         -n kargo
+helm uninstall argocd        -n argocd
+helm uninstall cert-manager  -n cert-manager
 
 # Namespace'ler
-kubectl delete ns kargo argocd cert-manager nginx-dev nginx-prod
+kubectl delete ns monitoring argo-rollouts kargo argocd cert-manager nginx-dev nginx-prod
 
 # Cluster'ın tamamı (en hızlısı)
 kind delete cluster --name kargo-lab
