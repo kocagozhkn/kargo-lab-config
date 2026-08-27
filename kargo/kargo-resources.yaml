@@ -204,69 +204,25 @@ spec:
         direct: false
         stages:
           - dev
+  # --------------------------------------------------------------------------
+  # Inline step'ler yerine ortak PromotionTask kullanılıyor.
+  # openPR=true -> ayrı branch'e push + PR aç + merge bekle.
+  # Task, PR gerçekten açılmadığında (diff yoksa git-open-pr skip edilir)
+  # wait-for-pr adımını da atlayacak guard'ı içeriyor.
+  # --------------------------------------------------------------------------
   promotionTemplate:
     spec:
       steps:
-        - uses: git-clone
-          config:
-            repoURL: ${{ vars.gitRepo }}
-            checkout:
-              - branch: main
-                path: ./src
-
-        - uses: kustomize-set-image
-          as: update-image
-          config:
-            path: ./src/env/prod
-            images:
-              - image: ${{ vars.imageRepo }}
-                tag: ${{ imageFrom(vars.imageRepo).Tag }}
-
-        - uses: git-commit
-          as: commit
-          config:
-            path: ./src
-            message: ${{ outputs['update-image'].commitMessage }}
-
-        - uses: git-push
-          as: push
-          config:
-            path: ./src
-            provider: github
-            # main'e değil, Kargo'nun ürettiği kargo/prod-... branch'ine push
-            generateTargetBranch: true
-
-        - uses: git-open-pr
-          as: open-pr
-          config:
-            repoURL: ${{ vars.gitRepo }}
-            provider: github
-            sourceBranch: ${{ outputs.push.branch }}
-            targetBranch: main
-            description: |
-              Kargo prod promotion — Freight: ${{ ctx.targetFreight.name }}
-              Promotion: ${{ ctx.promotion }}
-
-        - uses: git-wait-for-pr
-          as: wait-for-pr
-          config:
-            repoURL: ${{ vars.gitRepo }}
-            provider: github
-            # git-open-pr çıktısı iç içe: { pr: { id, url } }
-            prNumber: ${{ outputs['open-pr'].pr.id }}
-            pollInterval: 20s
-
-        - uses: argocd-update
-          config:
-            apps:
-              - name: kargo-lab-prod
-                namespace: argocd
-                sources:
-                  - repoURL: ${{ vars.gitRepo }}
-                    # dev ile aynı gerekçe (yukarıya bak). Fark: prod ayrı bir
-                    # branch'e push edip PR açıyor, dolayısıyla main'e inen
-                    # commit push'un değil PR merge'inin commit'i.
-                    # git-wait-for-pr bunu outputs['wait-for-pr'].commit
-                    # olarak veriyor.
-                    desiredRevision: ${{ outputs['wait-for-pr'].commit }}
-                    updateTargetRevision: true
+        - task:
+            name: standard-gitops-update
+          vars:
+            - name: gitRepo
+              value: https://github.com/kocagozhkn/kargo-lab-config.git
+            - name: imageRepo
+              value: public.ecr.aws/nginx/nginx
+            - name: envPath
+              value: ./src/env/prod
+            - name: argocdApp
+              value: kargo-lab-prod
+            - name: openPR
+              value: "true"

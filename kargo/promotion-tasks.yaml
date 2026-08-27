@@ -7,6 +7,13 @@
 #
 #  Stage'in geçmesi gereken var'lar: gitRepo, imageRepo, envPath, argocdApp
 #  Opsiyonel: openPR (varsayılan false), provider (varsayılan github)
+#
+#  ⚠️ TASK İÇİNDE ADIM ÇIKTILARI `task.outputs[...]` İLE OKUNUR.
+#     Düz `outputs[...]` ÇALIŞMAZ: task, Promotion oluşturulurken inflate
+#     edilir ve alias'lar çakışmayı önlemek için `task-1::` gibi bir ön ekle
+#     namespace'lenir. Gerçek runtime alias'ı task tanımı tarafından
+#     bilinemediği için düz referans nil döner ve adım
+#     "cannot fetch X from <nil>" ile düşer.
 # ==========================================================================
 ---
 apiVersion: kargo.akuity.io/v1alpha1
@@ -46,7 +53,7 @@ spec:
       as: commit
       config:
         path: ./src
-        message: ${{ outputs['update-image'].commitMessage }}
+        message: ${{ task.outputs['update-image'].commitMessage }}
 
     # ---------------- openPR=false: doğrudan main'e ----------------
     - uses: git-push
@@ -72,7 +79,7 @@ spec:
       config:
         repoURL: ${{ vars.gitRepo }}
         provider: ${{ vars.provider }}
-        sourceBranch: ${{ outputs['push-branch'].branch }}
+        sourceBranch: ${{ task.outputs['push-branch'].branch }}
         targetBranch: main
         description: |
           Kargo promotion — Freight: ${{ ctx.targetFreight.name }}
@@ -88,11 +95,11 @@ spec:
     # Koşula PR'ın gerçekten açıldığı şartı eklendi (?. nil-propagating).
     - uses: git-wait-for-pr
       as: wait-for-pr
-      if: ${{ vars.openPR == 'true' && outputs['open-pr']?.pr != nil }}
+      if: ${{ vars.openPR == 'true' && task.outputs['open-pr']?.pr != nil }}
       config:
         repoURL: ${{ vars.gitRepo }}
         provider: ${{ vars.provider }}
-        prNumber: ${{ outputs['open-pr'].pr.id }}
+        prNumber: ${{ task.outputs['open-pr'].pr.id }}
         pollInterval: 20s
 
     # DÜZELTME 2 — argocd-update revizyon sabitlemesi.
@@ -116,5 +123,5 @@ spec:
             namespace: argocd
             sources:
               - repoURL: ${{ vars.gitRepo }}
-                desiredRevision: ${{ outputs['wait-for-pr']?.commit ?? outputs.commit.commit }}
+                desiredRevision: ${{ task.outputs['wait-for-pr']?.commit ?? task.outputs['commit'].commit }}
                 updateTargetRevision: true
