@@ -42,9 +42,38 @@ spec:
         repoURL: public.ecr.aws/nginx/nginx
         imageSelectionStrategy: SemVer
         # 1.11'de bu alanın adı `constraint` (eski adı semverConstraint)
-        constraint: ">=1.27.0 <1.29.0"
+        # NOT: cluster'da elle <1.32.0'a genişletilmişti; drift'i kapatmak
+        # için canlı değer buraya alındı (eskiden <1.29.0 yazıyordu).
+        constraint: ">=1.27.0 <1.32.0"
         strictSemvers: true
         discoveryLimit: 20
+
+    # ----------------------------------------------------------------------
+    # Git subscription: config repo'nun kendisi izlenir.
+    #
+    # ⚠️ SONSUZ DÖNGÜ TUZAĞI: Kargo promotion sırasında BU repo'ya commit
+    #    atıyor. Filtresiz bir git subscription'da zincir şöyle kilitlenir:
+    #      promotion -> main'e commit -> yeni Freight -> dev autoPromotion
+    #      -> promotion -> ... (interval 1m, dakikada bir commit)
+    #
+    #    Çözüm: includePaths ile SADECE `base` izlenir. Kargo'nun yazdığı
+    #    yollar (env/dev, env/prod) allowlist dışında kaldığı için promotion
+    #    commit'leri Freight üretmez ve döngü kapanır.
+    #
+    #    Ön ek yoksa desen "base directory" olarak yorumlanır:
+    #    `base` -> base/deployment.yaml, base/service.yaml ... eşleşir.
+    #    (glob: ve regex: ön ekleri de destekli.)
+    #
+    #    Anlamı: base/ altındaki ortak manifest değişiklikleri artık Freight
+    #    üretir ve dev -> prod hattından akar.
+    # ----------------------------------------------------------------------
+    - git:
+        repoURL: https://github.com/kocagozhkn/kargo-lab-config.git
+        branch: main
+        commitSelectionStrategy: NewestFromBranch
+        discoveryLimit: 20
+        includePaths:
+          - base
 ---
 # --------------------------------------------------------------------------
 # Stage: dev
@@ -70,6 +99,18 @@ spec:
         name: nginx
       sources:
         direct: true
+
+  # --------------------------------------------------------------------------
+  # ⚠️ BU BLOK CLUSTER'DA ELLE EKLENMİŞTİ, GIT'TE YOKTU.
+  #    Buraya alınmasının nedeni: dosya olduğu gibi apply edilirse
+  #    verification ayarı sessizce SİLİNİYORDU.
+  #    AnalysisTemplate/smoke-check kaynağının kendisi hâlâ yalnızca
+  #    cluster'da duruyor; bu dosyada tanımlı değil.
+  # --------------------------------------------------------------------------
+  verification:
+    analysisTemplates:
+      - name: smoke-check
+
   promotionTemplate:
     spec:
       steps:
@@ -114,16 +155,23 @@ spec:
                   # repoURL, Argo CD Application'ın source.repoURL'i ile
                   # BİREBİR aynı olmalı; yoksa adım eşleşme bulamaz.
                   - repoURL: ${{ vars.gitRepo }}
-                    # desiredRevision BİLİNÇLİ OLARAK YOK.
-                    # dev ve prod aynı branch'i (main) paylaşıyor. Commit'e
-                    # sabitlenmiş bir desiredRevision yazarsak, prod'un PR'ı
-                    # main'e merge edildiği anda main ilerler, Argo CD dev
-                    # app'ini yeni commit'e senkronlar ve Kargo'nun sürekli
-                    # çalışan health check'i eski commit'i bekleyip Stage'i
-                    # kalıcı Unhealthy'ye düşürür.
-                    # Boş bırakınca revizyon Freight'ten çıkarılır; imaj-only
-                    # Freight'te git commit'i olmadığı için health check
-                    # yalnızca Application'ın Sync + Health durumuna bakar.
+                    # ⚠️ GIT SUBSCRIPTION EKLENDİĞİ İÇİN ARTIK ZORUNLU.
+                    # Şema: "If left undefined, the desired revision will be
+                    # determined by Freight (if possible)." Freight artık git
+                    # commit'i taşıdığından, boş bırakılırsa health check o
+                    # commit'i bekler; ama Application hâlâ main HEAD'i
+                    # izlediği için bir sonraki promotion main'i ilerletince
+                    # Stage kalıcı Unhealthy'ye düşer (dosyanın eski
+                    # yorumunda anlatılan senaryo tam olarak bu).
+                    #
+                    # Çözüm: revizyonu bu promotion'ın kendi push'una sabitle
+                    # ve targetRevision'ı da oraya yaz. Böylece Application
+                    # main HEAD'i takip etmeyi bırakır, Kargo'nun beklediği
+                    # commit ile Argo CD'nin senkronladığı commit aynı olur.
+                    desiredRevision: ${{ outputs.push.commit }}
+                    # updateTargetRevision olmadan desiredRevision yalnızca
+                    # health check'i etkiler, Application'ı sabitlemez.
+                    updateTargetRevision: true
 ---
 # --------------------------------------------------------------------------
 # Stage: prod
@@ -215,6 +263,10 @@ spec:
                 namespace: argocd
                 sources:
                   - repoURL: ${{ vars.gitRepo }}
-                    # desiredRevision yok — dev ile aynı gerekçe (yukarıya bak).
-                    # Bir sonraki dev promotion'ı main'i ilerlettiğinde prod
-                    # Stage'i Unhealthy'ye düşmesin diye.
+                    # dev ile aynı gerekçe (yukarıya bak). Fark: prod ayrı bir
+                    # branch'e push edip PR açıyor, dolayısıyla main'e inen
+                    # commit push'un değil PR merge'inin commit'i.
+                    # git-wait-for-pr bunu outputs['wait-for-pr'].commit
+                    # olarak veriyor.
+                    desiredRevision: ${{ outputs['wait-for-pr'].commit }}
+                    updateTargetRevision: true
