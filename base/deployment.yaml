@@ -61,7 +61,7 @@ spec:
         - name: nginx-exporter
           image: nginx/nginx-prometheus-exporter:1.5.3
           args:
-            - --nginx.scrape-uri=http://127.0.0.1:8080/stub_status
+            - --nginx.scrape-uri=http://127.0.0.1:9999/stub_status
           ports:
             - name: metrics
               containerPort: 9113
