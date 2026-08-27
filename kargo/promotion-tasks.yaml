@@ -1,0 +1,120 @@
+# ==========================================================================
+#  PromotionTask: standard-gitops-update
+#
+#  Tek şablonla iki akışı karşılar:
+#    openPR=false -> main'e doğrudan push (dev)
+#    openPR=true  -> ayrı branch + PR + merge bekleme (prod)
+#
+#  Stage'in geçmesi gereken var'lar: gitRepo, imageRepo, envPath, argocdApp
+#  Opsiyonel: openPR (varsayılan false), provider (varsayılan github)
+# ==========================================================================
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: standard-gitops-update
+  namespace: kargo-lab
+spec:
+  vars:
+    - name: gitRepo
+    - name: imageRepo
+    - name: envPath
+    - name: argocdApp
+    - name: openPR
+      value: "false"
+    - name: provider
+      value: github
+
+  steps:
+    - uses: git-clone
+      as: clone
+      config:
+        repoURL: ${{ vars.gitRepo }}
+        checkout:
+          - branch: main
+            path: ./src
+
+    - uses: kustomize-set-image
+      as: update-image
+      config:
+        path: ${{ vars.envPath }}
+        images:
+          - image: ${{ vars.imageRepo }}
+            tag: ${{ imageFrom(vars.imageRepo).Tag }}
+
+    - uses: git-commit
+      as: commit
+      config:
+        path: ./src
+        message: ${{ outputs['update-image'].commitMessage }}
+
+    # ---------------- openPR=false: doğrudan main'e ----------------
+    - uses: git-push
+      as: push-direct
+      if: ${{ vars.openPR != 'true' }}
+      config:
+        path: ./src
+        provider: ${{ vars.provider }}
+        targetBranch: main
+
+    # ---------------- openPR=true: branch + PR ----------------
+    - uses: git-push
+      as: push-branch
+      if: ${{ vars.openPR == 'true' }}
+      config:
+        path: ./src
+        provider: ${{ vars.provider }}
+        generateTargetBranch: true
+
+    - uses: git-open-pr
+      as: open-pr
+      if: ${{ vars.openPR == 'true' }}
+      config:
+        repoURL: ${{ vars.gitRepo }}
+        provider: ${{ vars.provider }}
+        sourceBranch: ${{ outputs['push-branch'].branch }}
+        targetBranch: main
+        description: |
+          Kargo promotion — Freight: ${{ ctx.targetFreight.name }}
+          Stage: ${{ ctx.stage }} / Promotion: ${{ ctx.promotion }}
+
+    # DÜZELTME 1 — nil-dereference.
+    # `if` yalnızca vars.openPR'a bakıyordu. Ama env dosyası zaten hedef
+    # tag'deyse kustomize-set-image no-op olur, git-commit skip edilir,
+    # açılacak diff kalmadığı için git-open-pr da SKIP edilir ve
+    # outputs['open-pr'] hiç oluşmaz. Bu adım yine de çalışıp
+    # `outputs['open-pr'].pr.id` üzerinde patlıyordu:
+    #   "failed to get step config: cannot fetch id from <nil>"
+    # Koşula PR'ın gerçekten açıldığı şartı eklendi (?. nil-propagating).
+    - uses: git-wait-for-pr
+      as: wait-for-pr
+      if: ${{ vars.openPR == 'true' && outputs['open-pr']?.pr != nil }}
+      config:
+        repoURL: ${{ vars.gitRepo }}
+        provider: ${{ vars.provider }}
+        prNumber: ${{ outputs['open-pr'].pr.id }}
+        pollInterval: 20s
+
+    # DÜZELTME 2 — argocd-update revizyon sabitlemesi.
+    # desiredRevision hiç verilmemişti. 1.11'de bu Stage'i bozmaz (revizyon
+    # kontrolü tamamen atlanır) ama Argo CD Application'ı `main` HEAD'ini
+    # takip etmeye devam eder ve Kargo hangi commit'e senkronlandığını
+    # doğrulamaz. Mevcut dev/prod Stage'leri commit'e sabitli çalıştığı için
+    # aynı davranış buraya taşındı.
+    #
+    # ?? ile her iki akış tek ifadede karşılanıyor:
+    #   PR akışı + merge  -> wait-for-pr.commit (main'e inen merge commit'i)
+    #   PR skip edildiyse -> commit.commit'e düşer
+    #   doğrudan push     -> wait-for-pr yok, commit.commit
+    # outputs.commit.commit, git-commit SKIP edilse bile dolu gelir
+    # (clone anındaki HEAD), dolayısıyla ifade her durumda tanımlı.
+    - uses: argocd-update
+      as: argocd
+      config:
+        apps:
+          - name: ${{ vars.argocdApp }}
+            namespace: argocd
+            sources:
+              - repoURL: ${{ vars.gitRepo }}
+                desiredRevision: ${{ outputs['wait-for-pr']?.commit ?? outputs.commit.commit }}
+                updateTargetRevision: true
