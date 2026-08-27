@@ -12,18 +12,22 @@ metadata:
   namespace: kargo-lab
 spec:
   metrics:
-    - name: always-pass
+    # nginx-dev'deki TÜM nginx pod'larının sağlıklı olmasını şart koşar.
+    - name: nginx-healthy
       count: 3
       interval: 15s
       failureLimit: 1
       provider:
         prometheus:
           address: http://prometheus-server.monitoring.svc.cluster.local:80
-          # DÜZELTME: eskiden `vector(0)` idi ve successCondition
-          # `result[0] == 1` beklediği için metrik adı "always-pass" olmasına
-          # rağmen HER koşuda fail ediyordu. Bu da dev Stage'i
-          # Verified=False'ta tutup dev -> prod hattını tıkıyordu
-          # (prod Freight'i dev'den direct: false ile alıyor, doğrulanmamış
-          # Freight downstream'e geçmez).
-          query: vector(1)
+          # min() kritik: promotion sırasında eski ve yeni pod bir süre
+          # birlikte yaşıyor. Ham `nginx_up` iki seri döndürür ve
+          # result[0] rastgele birini seçerdi; min() hepsinin 1 olmasını
+          # zorunlu kılar.
+          #
+          # `or vector(0)` da kritik: hiç nginx pod'u yoksa min() boş vektör
+          # döner, result[0] patlar ve ölçüm temiz bir "Failed" yerine
+          # "Error" verir. vector(0) fallback'i ile pod yokluğu net biçimde
+          # 0'a, yani başarısızlığa çevrilir.
+          query: min(nginx_up{namespace="nginx-dev"}) or vector(0)
       successCondition: result[0] == 1

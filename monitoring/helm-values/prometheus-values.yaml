@@ -18,6 +18,13 @@ prometheus-pushgateway:
   enabled: false
 
 server:
+  # Demo için 15s: varsayılan 1m ile bir kırılmanın metriğe yansıması
+  # AnalysisRun'ın bitiş süresinden (~45s) uzun sürüyor ve verification
+  # sorunu göremeden geçebiliyor.
+  global:
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    evaluation_interval: 15s
   # kind lab: PV uğraşmamak için emptyDir. Pod yeniden doğarsa metrik geçmişi gider.
   persistentVolume:
     enabled: false
