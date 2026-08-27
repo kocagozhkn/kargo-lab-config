@@ -7,4 +7,4 @@ resources:
 # (kustomize edit set image ile newTag değişir).
 images:
 - name: public.ecr.aws/nginx/nginx
-  newTag: 1.31.4
+  newTag: 1.28.3
