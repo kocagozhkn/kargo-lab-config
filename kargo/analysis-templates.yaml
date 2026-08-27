@@ -1,0 +1,29 @@
+# ==========================================================================
+#  AnalysisTemplate'ler — dev Stage'in verification adımı bunları çağırır.
+#
+#  Bu kaynak bir süre YALNIZCA cluster'da elle oluşturulmuş halde durdu,
+#  git'te karşılığı yoktu. Drift'i kapatmak için buraya alındı.
+# ==========================================================================
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: smoke-check
+  namespace: kargo-lab
+spec:
+  metrics:
+    - name: always-pass
+      count: 3
+      interval: 15s
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus-server.monitoring.svc.cluster.local:80
+          # DÜZELTME: eskiden `vector(0)` idi ve successCondition
+          # `result[0] == 1` beklediği için metrik adı "always-pass" olmasına
+          # rağmen HER koşuda fail ediyordu. Bu da dev Stage'i
+          # Verified=False'ta tutup dev -> prod hattını tıkıyordu
+          # (prod Freight'i dev'den direct: false ile alıyor, doğrulanmamış
+          # Freight downstream'e geçmez).
+          query: vector(1)
+      successCondition: result[0] == 1
