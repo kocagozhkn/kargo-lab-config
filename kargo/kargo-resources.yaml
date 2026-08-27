@@ -42,9 +42,12 @@ spec:
         repoURL: public.ecr.aws/nginx/nginx
         imageSelectionStrategy: SemVer
         # 1.11'de bu alanın adı `constraint` (eski adı semverConstraint)
-        # NOT: cluster'da elle <1.32.0'a genişletilmişti; drift'i kapatmak
-        # için canlı değer buraya alındı (eskiden <1.29.0 yazıyordu).
-        constraint: ">=1.27.0 <1.32.0"
+        # Bilinçli olarak <1.29.0'a daraltıldı: dev'i 1.28.3'te tutmak için.
+        # autoPromotionEnabled: true olduğundan, constraint 1.31.4'e izin
+        # verdiği sürece dev kendiliğinden oraya fırlar; en yeni artefaktı
+        # 1.28.3 yapmanın tek yolu constraint'i kısmak.
+        # Yükseliş akışını tekrar görmek için burayı <1.32.0'a genişlet.
+        constraint: ">=1.27.0 <1.29.0"
         strictSemvers: true
         discoveryLimit: 20
 
